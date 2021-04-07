@@ -1,0 +1,886 @@
+
+<!DOCTYPE html>
+<html>
+
+    <head>
+        <meta name="v" content="1.00">
+        <meta name="client" content="Free TV">
+        <!-- change viewport scale to 1.2 for youtube loading issue -->
+        <meta name="viewport" content="width=device-width, initial-scale=1.2, user-scalable=no">
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <meta name="description" content="Free TV IOS YT Player">
+        <meta name="keywords" content="FreeTV, YouTube, Player">
+        <meta name="author" content="LivApp">
+
+        <style>
+
+            body {
+                margin: 0;
+                padding: 0;
+                text-align: center;
+                background: black;
+                background-repeat: repeat-x;
+                background-size: 1px 60px;
+                background-image: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAB4CAYAAADYDyODAAAAAXNSR0IArs4c6QAAAHhJREFUOBHtkuEKgDAIhDfZu/vW2u5Ahy2C/kU0iOTslvdhV1Vv8wwzw7sNdwqnAqrsrXDV1v4xlLxZ4CoKW3RxBowRN6erFvsvOHy4PjaPIByyrVyRtGIhBLD5+dzvc4KqRVBdnK9hQk3y79/n5/tTsSAuTp8PqwMPEbY1bEzgfgAAAABJRU5ErkJggg==');
+            }
+        
+            .classicalBody {
+                width: 100%;
+                min-height: 100pt;
+            }
+
+            /* change width/height to 83.33% for viewport scale 1.2 */
+            .adjustedBody {
+                top: 0;
+                left: 0;
+                width: 83.3333%;
+                height: 83.3333%;
+                position: fixed;
+            }
+
+            #ytPlayerDiv {
+                
+            }
+
+            .classicalYTPlayer {
+            
+            }
+
+            /* change width/height to 83.33% for viewport scale 1.2 */
+            .adjustedYTPlayer {
+                top: 0;
+                left: 0;
+                width: 83.3333%;
+                height: 83.3333%;
+                position: fixed;
+            }
+
+        </style>
+    </head>
+
+    <body onload="pageLoaded()" class="classicalBody">
+        <div id="ytPlayerDiv" webkit-playsinline class="classicalYTPlayer"></div>
+        
+        <img id="stateImg" style="width:0px; height:0px; display:none">
+        <div id="videoContainer"></div>
+        <iframe id="onPlayerErrorLogger" src="" frameborder="0" height="0" width="0"></iframe>
+        <iframe id="onPlayerReadyLogger" src="" frameborder="0" height="0" width="0"></iframe>
+
+        <script>
+            /**
+             * Define const
+             */
+            var YT_URL = "https://www.youtube.com/iframe_api";
+            var PLAYER_ORIGIN = 'http://livapp.com';
+            var PLAYER_WIDTH = '100%';
+            var UNINITIALIZED = -99999;
+            var WATCHDOG_PERIOD = 1000;
+            var DEFAULT_STUCK_TIMEOUT = 20;
+            var RETRY_STUCK_TIMEOUT = 40;
+            var STUCK_TIMEOUT = DEFAULT_STUCK_TIMEOUT;
+            var SMALL_TIME_DELTA = 0.9;
+            
+            var YT_ST_UNSTARTED = -1;
+            var YT_ST_ENDED = 0;
+            var YT_ST_PLAYING = 1;
+            var YT_ST_PAUSED = 2;
+            var YT_ST_BUFFERING = 3;
+            var YT_ST_CUED = 5;
+
+            var YT_ERRCODE_RECOVERABLE = 5;
+            var YT_QUALITY_UNKNOWN = "unknown";
+            var YT_QUALITY_DEFAULT = "default";
+            var YT_QUALITY_SMALL = "small";
+            var YT_QUALITY_MEDIUM = "medium";
+            var YT_QUALITY_LARGE = "large";
+            var YT_QUALITY_HD720 = "hd720";
+            var YT_QUALITY_HD1080 = "hd1080";
+            var YT_PLAYER_DIV_ID = "ytPlayerDiv";
+            var BUFFERING_LIMIT = 3;
+            var BUFFER_STUCK_LIMIT = 5;
+            var PLAY_NEXT_FRACTION_THRESHOLD = 0.99;
+            var ON_FIXABLE_ERROR_RETRY_LIMIT = 3;
+            var ON_ERROR_RETRY_LIMIT = 2;
+            var PLAY_NEXT_TIME_REMAIN_THRESHOLD = 2;
+            var IOS_FIRST_WEBGL_SUPPORT_VERSION = 8;
+            var HIT_TEST_RULES = ["div.annotation"];
+            var PLAYER_READY_WHITE_LIST = [{
+                "host": "doubleclick.net",
+                "path": ".*"
+            }, {
+                "host": "googlesyndication.com",
+                "path": ".*"
+            }, {
+                "host": "mixerbox.com",
+                "path": ".*"
+            }, {
+                "host": "accounts.google.com",
+                "path": ".*"
+            }, {
+                "host": "content.googleapis.com",
+                "path": ".*"
+            }];
+            
+            var YT_ERR_INVALID_PARAM = 2;
+            var YT_ERR_HTML5_PLAYER_ERR = 5;
+            var YT_ERR_VIDEO_NOT_FOUND = 100;
+            var YT_ERR_EMBEDDED_DISABLE = 101;
+            var YT_ERR_EMBEDDED_DISABLE_DISGUISE = 150;
+
+            /**
+             * Kibana logger
+             */
+            var KIBANA_PATH = "http://l.mixerbox.com/tvapp";
+            var YT_ON_ERROR_PATHNAME = "youtubePlayerError";
+            var YT_ON_READY_PATHNAME = "youtubePlayerReady";
+
+            /**
+             * Define variable
+             */
+            var ytPlayer = null;
+            var isYTScriptReady = false;
+            var ytScriptStuckTime = 0;
+            var isPageLoaded = false;
+            var isPlayerReady = false;
+            var shouldPlay = false;
+            var ytPlayerState = UNINITIALIZED;
+            var curVideoId = null;
+            var stuckTime = 0;
+            var preVideoTime = UNINITIALIZED;
+            var playerHeight;
+            var onLine = checkConnect();
+            var offlineToOnlineEvent = false;
+            var videoEnded = false;
+            var videoIdWaitToBeLoaded = null;
+            var msgIframe = null;
+            var loadVideoByIdTimeStamp = 0;
+            var loadVideoByIdInterval = 0;
+            var loadVideoByIdShouldPlayFlag = false;
+            var currentVideoQuality = YT_QUALITY_SMALL;
+            var currentCaptionEnable = false;
+            var didLoadCaptionList = false;
+            
+            var appVersion = "0";
+            var uuid = "";
+            var sysInfo = null;
+            var deviceHeight = 0;
+
+            var inBackground = false;
+            var onErrorRetryCount = 0;
+            var loadedVideoCount = 0;
+            
+            var isPlayerOpenedByApp = false;
+            var isAdShowing = false;
+
+            var shouldMute = false;
+
+            init();
+
+            /**
+             * Initialize
+             *
+             * @method init
+             * @method pageLoaded
+             * @method testIsPlayerOpenedByApp
+             * @method redirectToGooglePlay - player not opened by app
+             * @method setAdjustedClass
+             */
+
+            function init() {
+                log("=== FT_YT_Remote_Player init ===");
+
+                // testIsPlayerOpenedByApp();
+
+                var injectionCommand =
+                    "(function() { log('=== video node appended to document ==='); document.getElementById('videoContainer').appendChild(document.createElement('video')); })();";
+                sendToApp("ios-command-injection", injectionCommand);
+
+                runYTAPIWatchDog();
+                loadYouTubeAPI();
+
+                sendToApp("ios-command-player-page-init", "");
+                sendToApp("ios-command-player-request-whitelist", JSON.stringify(PLAYER_READY_WHITE_LIST));
+            }
+
+            function testIsPlayerOpenedByApp() {
+                var code = "(function() { isPlayerOpenedByApp = true; })();";
+                sendToApp("ios-command-injection", code);
+            }
+
+            function pageLoaded() {
+                // if (isPlayerOpenedByApp) { 
+                    log("FT_YT_Remote_Player has been loaded");
+                    isPageLoaded = true;
+                    sendToApp("ios-command-player-page-loaded", "");
+
+                    var currentHost = window.location.host;
+                    if (currentHost.length > 0) {
+                        sendToApp("ios-command-player-page-host", currentHost);
+                    }
+                // } else {
+                //     redirectToAppStore();
+                // }
+            }
+
+            function redirectToAppStore() {
+                window.location = "https://apps.apple.com/us/app/tv-app-watch-news-movies-tv-shows/id1152299107?ls=1";
+            }
+
+            function setAdjustedClass() {
+                log("Set Adjusted Class");
+                document.body.className = "adjustedBody";
+                document.getElementById("ytPlayerDiv").className = "adjustedYTPlayer";
+            }
+
+            function setAppVersion(_appVersion) {
+                appVersion = _appVersion;
+            }
+ 
+            function setDeviceHeight(_deviceHeight) {
+                deviceHeight = _deviceHeight;
+            }
+ 
+            function setSysInfo(_sysinfo) {
+                sysInfo = _sysinfo;
+            }
+
+            function setUUID(_uuid) {
+                uuid = _uuid;
+            }
+
+            function setShouldMute(_shouldMute) {
+                console.log("setShouldMute " + _shouldMute);
+                shouldMute = _shouldMute;
+            }
+
+            /**
+             * YouTube API related
+             *
+             * @method loadYouTubeAPI
+             * @method onYouTubeIframeAPIReady
+             * @method runYTAPIWatchDog
+             * @method getYTPlayerDefaultVars
+             * @method getYTPlayerEventsObj
+             */
+
+            function loadYouTubeAPI() {
+                log("loadYouTubeAPI");
+                if (!window['YT']) {
+                    var YT = {};
+                }
+                if (!YT.Player) {
+                    (function() {
+                        var a = document.createElement('script');
+                        a.src = YT_URL;
+                        a.async = true;
+                        var b = document.getElementsByTagName('script')[0];
+                        b.parentNode.insertBefore(a, b);
+                    })();
+                } else {
+                    log("Reload Youtube API Failed");
+                }
+            }
+
+            function runYTAPIWatchDog() {
+                var YTAPITimer = setTimeout(runYTAPIWatchDog, WATCHDOG_PERIOD);
+                checkOfflineToOnlineEvent();
+                if (isYTScriptReady) {
+                    document.getElementById("videoContainer").innerHTML = "";
+                    log("=== video node removed from document ===");
+                    clearTimeout(YTAPITimer);
+                    log("runYTAPIWatchDog: YouTube API ready!");
+                    ytScriptStuckTime = 0;
+                    runWatchDog();
+                } else if (ytScriptStuckTime >= DEFAULT_STUCK_TIMEOUT || offlineToOnlineEvent) {
+                    sendToApp("ios-command-player-page-recreate", "");
+                    // log("runYTAPIWatchDog: reload YouTube API");
+                    // ytScriptStuckTime = 0;
+                    // offlineToOnlineEvent = false;
+                    // loadYouTubeAPI();
+                } else {
+                    ytScriptStuckTime ++;
+                    log("runYTAPIWatchDog: script not ready, ytScriptStuckTime = " + ytScriptStuckTime);
+                }
+            }
+
+            function onYouTubeIframeAPIReady() {
+                log("onYouTubeIframeAPIReady: create new player with player width: " + PLAYER_WIDTH);
+                isYTScriptReady = true;
+
+                createEmptyYTPlayer();
+                // var injectionCommand = "(function() { log('=== create empty ytPlayer with injectction ==='); createEmptyYTPlayer(); })();";
+
+                // sendToApp("ios-command-injection", injectionCommand);
+            }
+
+            function createEmptyYTPlayer() {
+                log("=== create empty ytPlayer ===");
+                ytPlayer = new YT.Player(YT_PLAYER_DIV_ID, {
+                    width: PLAYER_WIDTH,
+                    playerVars: getYTPlayerVars(0),
+                    events: getYTPlayerEventsObj()
+                });
+                log("=== create empty ytPlayer done ===");
+            }
+
+            function getYTPlayerVars(startTime) {
+                return {
+                    playsinline: 1,
+                    enablejsapi: 1,
+                    autoplay: 1,
+                    controls: 0,
+                    showinfo: 0,
+                    rel: 0,
+                    start: startTime,
+                    iv_load_policy: 3,
+                    modestbranding: 1,
+                    cc_load_policy: 0
+                };
+            }
+
+            function getYTPlayerEventsObj() {
+                return {
+                    'onReady': onPlayerReady,
+                    'onStateChange': onPlayerStateChange,
+                    'onError': onPlayerError
+                };
+            }
+
+            /**
+             * Player state related
+             *
+             * @method onPlayerReady
+             * @method onPlayerStateChange
+             * @method onPlayerError
+             * @method sendPlayerReady
+             */
+
+            function onPlayerReady(event) {
+                log("onPlayerReady: shouldPlay = " + shouldPlay);
+                logYTPlayerReady();
+                isPlayerReady = true;
+                if (shouldPlay) {
+                    if (videoIdWaitToBeLoaded) {
+                        log(" - Load buffered video " + videoIdWaitToBeLoaded);
+                        loadVideoById(videoIdWaitToBeLoaded, 0, false, false);
+                    }
+                }
+                sendPlayerReady();
+            }
+
+            function ytPlayerStateToString(state) {
+                var stateString = "unknown";
+
+                switch (state) {
+                    case YT_ST_UNSTARTED:
+                        stateString = "unstarted";
+                        break;
+                    case YT_ST_ENDED:
+                        stateString = "ended";
+                        break;
+                    case YT_ST_PLAYING:
+                        stateString = "playing";
+                        break;
+                    case YT_ST_PAUSED:
+                        stateString = "paused";
+                        break;
+                    case YT_ST_BUFFERING:
+                        stateString = "buffering";
+                        break;
+                    case YT_ST_CUED:
+                        stateString = "cued";
+                        break;
+                    default:
+                        break;
+                }
+
+                return stateString;
+            }
+
+            function onPlayerStateChange(event) {
+                ytPlayerState = event.data;
+                log("onPlayStateChange: player state = " + event.data);
+
+                if (ytPlayerState == YT_ST_PLAYING) {
+                    shouldPlay = true;
+
+                    if (loadVideoByIdShouldPlayFlag) {
+                        loadVideoByIdShouldPlayFlag = false;
+                    }
+
+                    sendToApp("ios-command-update-video-duration", ytPlayer.getDuration());
+
+                    if (!didLoadCaptionList) {
+                        var module;
+                        if (ytPlayer.getOptions().indexOf("cc") !== -1) {
+                            module = "cc";
+                        } else if (ytPlayer.getOptions().indexOf("captions") != -1) {
+                            module = "captions";
+                        }
+                        ytPlayer.loadModule(module);
+
+                        setTimeout(function() { 
+                            var tracklist = ytPlayer.getOption(module, "tracklist");
+                            var trackstr = JSON.stringify(tracklist);
+                            sendToApp("ios-command-available-captions", trackstr);
+
+                            if (!currentCaptionEnable) {
+                                    setCaption("");
+                            }
+                        }, 1000);
+
+                        didLoadCaptionList = true;
+                    }
+                    
+                } else if (ytPlayerState == YT_ST_PAUSED) {
+                    shouldPlay = false;
+
+                    if (loadVideoByIdShouldPlayFlag) {
+                        shouldPlay = true;
+                    }
+                }
+
+                if (ytPlayerState != YT_ST_UNSTARTED) {
+                    sendToApp("ios-command-ytplayer-state-change", ytPlayerStateToString(event.data));
+                }
+            }
+
+            function onPlayerError(event) {
+                log("onPlayerError: Error code: " + event.data);
+
+                onErrorRetryCount ++;
+
+                if (checkConnect() && isFixableYTError(event.data) && onErrorRetryCount < ON_FIXABLE_ERROR_RETRY_LIMIT) {
+                    loadVideoById(curVideoId, 0, shouldCreateNewPlayerWhenRetry(), true);
+                } else if (checkConnect() && onErrorRetryCount < ON_ERROR_RETRY_LIMIT) {
+                    loadVideoById(curVideoId, 0, shouldCreateNewPlayerWhenRetry(), true);
+                } else {
+                    onErrorRetryCount = 0;
+                    logYTPlayerError(event.data);
+                    sendToApp("ios-command-player-error", "");
+                    if (checkConnect()) {
+                        playNextToSkipError();
+                    } else {
+                        //Wait watchdog to enable
+                    }
+                }
+            }
+
+            function sendPlayerReady() {
+                var timer = setTimeout(sendPlayerReady, WATCHDOG_PERIOD);
+                log("sendPlayerReady: Player ready, check isPageLoaded = " + isPageLoaded + " !!! ");
+                if (isPageLoaded) {
+                    sendToApp("ios-command-player-ready", "true");
+                    clearTimeout(timer);
+                }
+            }
+
+            /**
+             * Player control
+             *
+             * @method loadVideoById
+             * @method playVideo
+             * @method pauseVideo
+             * @method playNext
+             * @method seekTo
+             * @method playHDQaulity
+             * @method showYTPlayer
+             * @method setCaption
+             */
+
+            function loadVideoById(id, startTime, shouldCreateNewPlayer, isRecovering) {
+
+                log("loadVideoById: " + id + " start from " + startTime + " should create new player " + shouldCreateNewPlayer);
+
+                if (curVideoId != id) onErrorRetryCount = 0;
+
+                shouldPlay = true;
+                curVideoId = id;
+                loadedVideoCount++;
+
+                if (!startTime) {
+                    startTime = 0;
+                }
+
+                if (!shouldCreateNewPlayer && !isPlayerReady) {
+                    //Wait for player ready, caching video id
+                    log(" >> wait for player ready, caching video id");
+                    videoIdWaitToBeLoaded = curVideoId;
+                    loadVideoByIdTimeStamp = Math.round(new Date().getTime() / 1000);
+                    return;
+                }
+
+                if (!shouldCreateNewPlayer)
+                {
+                    STUCK_TIMEOUT = DEFAULT_STUCK_TIMEOUT;
+                }
+
+                videoIdWaitToBeLoaded = null;
+                loadVideoByIdInterval = 0;
+                loadVideoByIdTimeStamp = 0;
+                loadVideoByIdShouldPlayFlag = true;
+                ytPlayerState = UNINITIALIZED;
+                videoEnded = false;
+
+                didLoadCaptionList = false;
+
+                try {
+                    /*
+                     * Stop and Destroy old ytPlayer.
+                     * First check if those functions really exist,
+                     * since ytPlayer may not be null but still be still not yet ready
+                     */
+                    showYTPlayer(!inBackground);
+
+                    if (ytPlayer != null && ytPlayer.pauseVideo != null && ytPlayerState == YT_ST_PLAYING) {
+                        ytPlayer.pauseVideo();
+                    }
+
+                    if (ytPlayer != null && ytPlayer.loadVideoById != null && !shouldCreateNewPlayer) {
+                        log(" >> load video by id using current player");
+                        if (isRecovering) {
+                            ytPlayer.loadVideoById(id, startTime, "default");
+                        } else {
+                            ytPlayer.loadVideoById(id, startTime, currentVideoQuality);
+                        }
+
+                        if (ytPlayer.playVideo) {
+                            ytPlayer.playVideo();
+                        }
+                    } else {
+                        log(" >> creat new player");
+                        if (ytPlayer != null && ytPlayer.destroy != null) {
+                            try {
+                                ytPlayer.destroy();
+                            } catch (err) {
+                                log("ytPlayer.destroy() failed.");
+                            }
+                        }
+                        isPlayerReady = false;
+                        sendToApp("ios-command-player-not-ready", "");
+                        ytPlayer = null;
+                        ytPlayer = new YT.Player(YT_PLAYER_DIV_ID, { // Omit width
+                            height: playerHeight,
+                            width: PLAYER_WIDTH,
+                            videoId: curVideoId,
+                            playerVars: getYTPlayerVars(startTime),
+                            events: getYTPlayerEventsObj()
+                        });
+                    }
+                } catch (err) {
+
+                }
+            }
+
+            function playVideo() {
+                log("playVideo");
+                shouldPlay = true;
+                checkVideoState();
+            }
+
+            function pauseVideo() {
+                log("pauseVideo");
+                shouldPlay = false;
+                checkVideoState();
+            }
+
+            function playNext() {
+                log("playNext");
+                sendToApp("ios-command-play-next", "");
+            }
+
+            function playNextToSkipError() {
+                sendToApp("ios-command-play-next-skip-error", "");
+            }
+
+            function seekTo(seconds) {
+                if (ytPlayer.getDuration() > 0) {
+                    if (Math.abs(ytPlayer.getDuration() - seconds) < SMALL_TIME_DELTA) {
+                        log("seekTo: seek to last -> play next");
+                        videoEnded = true;
+                        playNext();
+                    } else {
+                        ytPlayer.seekTo(seconds, true);
+                    }
+                }
+            }
+
+            function playHDQaulity(isHD) {
+                if (isHD) {
+                    currentVideoQuality = YT_QUALITY_MEDIUM;
+                } else {
+                    currentVideoQuality = YT_QUALITY_SMALL;
+                }
+                
+                // if (ytPlayer && isYTScriptReady && ytPlayer.getPlaybackQuality && ytPlayer.getPlaybackQuality() != currentVideoQuality && ytPlayer.getCurrentTime && curVideoId) {
+                //     if (shouldPlay) {
+                //         loadVideoById(curVideoId, ytPlayer.getCurrentTime(), false, true);
+                //     } else {
+                //         ytPlayer.cueVideoById(curVideoId, ytPlayer.getCurrentTime(), currentVideoQuality);
+                //     }
+                // }
+            }
+
+            function showYTPlayer(show) {
+                document.getElementById(YT_PLAYER_DIV_ID).style.display = show ? "inline" : "none";
+            }
+
+            function setCaption(languageCode) {
+                log("to set caption with language code " + languageCode);
+
+                var module;
+                if (ytPlayer.getOptions().indexOf("cc") != -1) {
+                    module = "cc";
+                } else if (ytPlayer.getOptions().indexOf("captions") != -1) {
+                    module = "captions";
+                }
+
+                if (languageCode.length) {
+                    ytPlayer.loadModule(module);
+                    ytPlayer.setOption(module, "track", {"languageCode": languageCode});
+                    currentCaptionEnable = true;
+                } else {
+                    ytPlayer.unloadModule(module);
+                    currentCaptionEnable = false;
+                }
+            }
+
+            /**
+             * Player watch dog
+             *
+             * @method runWatchDog
+             * @method runYTPlayerWatchDog
+             * @method updateVideoTime
+             * @method checkVideoState
+             * @method updateStuckTime
+             * @method recoverIfNeed
+             */
+
+            function runWatchDog() {
+                setTimeout(runWatchDog, WATCHDOG_PERIOD);
+                runYTPlayerWatchDog();
+            }
+
+            function runYTPlayerWatchDog() {
+                if (!isPlayerReady) {
+                    checkOfflineToOnlineEvent();
+                }
+                checkIsAdShowing();
+                checkVideoState();
+                updateStuckTime();
+                updateVideoTime();
+            }
+
+            function updateVideoTime() {
+                if (isPlayerReady && ytPlayer != null && ytPlayer.getCurrentTime != null) {
+                    var playbackCurrentTime = ytPlayer.getCurrentTime();
+                    sendToApp("ios-command-update-video-time", playbackCurrentTime);
+                }
+            }
+
+            function checkVideoState() {
+
+                if (!isPlayerReady || ytPlayer == null) {
+                    log("checkVideoState: player not ready, return");
+                    return;
+                }
+
+                if (shouldMute) {
+                    ytPlayer.mute();
+                } else {
+                    ytPlayer.unMute();
+                }
+
+                if (ytPlayer.getPlaybackQuality() != currentVideoQuality) {
+                    ytPlayer.setPlaybackQuality(currentVideoQuality);
+                }
+
+                var videoLoadedFraction = ytPlayer.getVideoLoadedFraction();
+                var bufferRemaining = (videoLoadedFraction * ytPlayer.getDuration()) - ytPlayer.getCurrentTime();
+                var remainingTime = ytPlayer.getDuration() - ytPlayer.getCurrentTime();
+
+                if (ytPlayerState == YT_ST_ENDED) {
+                    log("checkVideoState: player state is ended -> play next " + !videoEnded);
+                    if (!videoEnded) {
+                        videoEnded = true;
+                        playNext();
+                    }
+                } else {
+                    if (shouldPlay) {
+                        if (ytPlayerState != YT_ST_PLAYING) {
+                            if ((videoLoadedFraction < PLAY_NEXT_FRACTION_THRESHOLD && bufferRemaining >= 0 && bufferRemaining <= BUFFERING_LIMIT) && (stuckTime % BUFFER_STUCK_LIMIT) > 0) {
+                                log("checkVideoState: buffering");
+                            } else if (ytPlayer.getDuration() > 0 && (Math.abs(ytPlayer.getDuration() - ytPlayer.getCurrentTime()) < SMALL_TIME_DELTA)) {
+                                log("checkVideoState: pause -> play next");
+                                videoEnded = true;
+                                playNext();
+                            } else {
+                                log("checkVideoState: is not playing -> play video");
+                                ytPlayer.playVideo();
+                            }
+                        } else if (ytPlayer.getCurrentTime() < preVideoTime) {
+                            log("checkVideoState: play video");
+                            ytPlayer.playVideo();
+                        } else if (inBackground && ytPlayerState == YT_ST_PLAYING && remainingTime < PLAY_NEXT_TIME_REMAIN_THRESHOLD) {
+                            log("checkVideoState: background (" + remainingTime + " < " + PLAY_NEXT_TIME_REMAIN_THRESHOLD + ") -> play next");
+                            ytPlayer.pauseVideo();
+                            playNext();
+                        } else {
+                            log("checkVideoState: keep watching");
+                        }
+
+                    } else {
+                        if (ytPlayerState == YT_ST_PLAYING || ytPlayerState == YT_ST_BUFFERING) {
+                            log("checkVideoState: should not play -> pause");
+                            ytPlayer.pauseVideo();
+                        } else {
+                            log("checkVideoState: should not play, keep watching .. state = " + ytPlayerState);
+                        }
+                    }
+                }
+            }
+
+            function updateStuckTime() {
+                if (stuckTime > 0) {
+                    log("updateStuckTime: stuckTime = " + stuckTime);
+                }
+
+                if (!isPlayerReady || (ytPlayer == null || ytPlayer.getCurrentTime == null)) {
+                    stuckTime ++;
+                    recoverIfNeed();
+                } else {
+                    var curVideoTime = ytPlayer.getCurrentTime();
+                    if (shouldPlay && Math.abs(curVideoTime - preVideoTime) < SMALL_TIME_DELTA) {
+                        stuckTime ++;
+                        recoverIfNeed();
+                    } else {
+                        stuckTime = 0;
+                    }
+                    preVideoTime = curVideoTime;
+                }
+            }
+
+            function recoverIfNeed() {
+                if (stuckTime >= STUCK_TIMEOUT && !isPlayerReady)
+                {
+                    sendToApp("ios-command-player-page-recreate", "");
+                }
+                else
+                {
+                    if (videoIdWaitToBeLoaded) {
+                        loadVideoByIdInterval = (Math.round(new Date().getTime() / 1000) - loadVideoByIdTimeStamp);
+                    } else {
+                        loadVideoByIdInterval = 0;
+                    }
+                    if (stuckTime >= STUCK_TIMEOUT || (!isPlayerReady && offlineToOnlineEvent) || loadVideoByIdInterval >= BUFFERING_LIMIT) {
+                        var curVideoTime = 0;
+                        if (isPlayerReady && ytPlayer != null && ytPlayer.getCurrentTime != null) {
+                            curVideoTime = ytPlayer.getCurrentTime();
+                        }
+                        stuckTime = 0;
+                        offlineToOnlineEvent = false;
+                        loadVideoById(curVideoId, curVideoTime, shouldCreateNewPlayerWhenRetry(), true);
+
+                        STUCK_TIMEOUT = RETRY_STUCK_TIMEOUT;
+                    }
+                }
+            }
+
+            function checkIsAdShowing() {
+                // console.log("checkIsAdShowing " + ytPlayerState);
+                // var checkIsAdShowingCode = "var adContainers = document.getElementById('ytPlayerDiv').contentDocument.getElementsByClassName('video-ads'); if (adContainers.length) { log('adContainer.length = ' + adContainers[0].childNodes.length); if (adContainers[0].childNodes.length > 0) isAdShowing = true; else isAdShowing = false; }";
+             //    sendToApp("ios-command-injection", checkIsAdShowingCode);
+
+             //    if (ytPlayerState == YT_ST_BUFFERING || ytPlayerState == YT_ST_UNSTARTED) {
+             //     // console.log("is ad showing " + isAdShowing);
+             //         sendToApp("ios-command-is-ad-showing", isAdShowing? "true": "false");
+             //    }
+            }
+
+            /**
+             * Parameter setter
+             *
+             * @method setPlayerHeight
+             * @method setDefaultHeight
+             */
+
+            function setPlayerHeight(height) {
+                playerHeight = height;
+                if (ytPlayer && ytPlayer.setSize) {
+                    ytPlayer.setSize('100%', playerHeight);
+                }
+            }
+
+            function setDefaultHeight(height) {
+                playerHeight = height;
+            }
+
+            /**
+             * Assessor
+             *
+             * @method checkConnect
+             * @method checkOfflineToOnlineEvent
+             * @method shouldCreateNewPlayerWhenRetry
+             * @method isFixableYTError
+             */
+
+            function checkConnect() {
+                return navigator.onLine;
+            }
+
+            function checkOfflineToOnlineEvent() {
+                if (!onLine && checkConnect()) {
+                    offlineToOnlineEvent = true;
+                }
+                onLine = checkConnect();
+            }
+
+            function shouldCreateNewPlayerWhenRetry() {
+                return true;
+            }
+
+            function isFixableYTError(ytErrorState) {
+                return (ytErrorState == YT_ERR_INVALID_PARAM || ytErrorState == YT_ERR_HTML5_PLAYER_ERR);
+            }
+
+            /**
+             * Logger
+             *
+             * @method log
+             * @method logYTPlayerError
+             * @method sendToApp
+             */
+
+            function log(_msg) {
+                sendToApp("ios-log", _msg);
+                console.log(_msg);
+            }
+
+            function logYTPlayerError(ytErrorCode) {
+                document.getElementById("onPlayerErrorLogger").src = KIBANA_PATH + "/" + YT_ON_ERROR_PATHNAME + "?" + "mobile=1" + (uuid.length? "&uuid=" + uuid: "") + (curVideoId.length? "&videoId=" + curVideoId: "") + ("&errorCode=" + ytErrorCode);
+            }
+
+            function logYTPlayerReady() {
+                document.getElementById("onPlayerReadyLogger").src = KIBANA_PATH + "/" + YT_ON_READY_PATHNAME + "?" + "mobile=1" + (uuid.length? "&uuid=" + uuid: "");
+            }
+
+            function sendToApp(_key, _val) {
+                var msgIframe = document.createElement("IFRAME");
+                if (msgIframe.setAttribute) {
+                    msgIframe.setAttribute("src", _key + ":##sendToApp##" + _val);
+                    msgIframe.setAttribute("hidden", true);
+                    document.documentElement.appendChild(msgIframe);
+                    if (msgIframe.parentNode) {
+                        try {
+                            msgIframe.parentNode.removeChild(msgIframe);
+                        } catch (err) {
+                            console.log("Remove msgIframe failed.");
+                        }
+                    }
+                    msgIframe = null;
+                }
+            }
+
+        </script>
+    </body>
+</html>
